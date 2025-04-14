@@ -61,6 +61,7 @@ target/
 *.wasm.map
 *.wat
 
+./scripts
 # Python
 __pycache__/
 *.py[cod]
