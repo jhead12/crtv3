@@ -1,9 +1,7 @@
 import { ChatOpenAI } from '@langchain/openai';
 import dotenv from 'dotenv';
 import type { Configuration } from '../Configuration.js';
-import { TypeScriptParser } from '../TypeScriptParser.js';
 import { CodeFormatter } from './utils/CodeFormatter.js';
-import { DocumentOrganizer } from './utils/DocumentOrganizer.js';
 
 dotenv.config();
 
@@ -11,20 +9,22 @@ dotenv.config();
  * Service for interacting with OpenAI chat API.
  */
 export class AIService {
-  private chatModel: ChatOpenAI;
-  private codeFormatter: CodeFormatter;
-  private chatModelFAQ: ChatOpenAI;
+  private readonly chatModel: ChatOpenAI;
+  private readonly codeFormatter: CodeFormatter;
+  private readonly chatModelFAQ: ChatOpenAI;
+  private readonly configuration: Configuration;
 
   /**
    * Constructor for initializing the ChatOpenAI instance.
    *
-   * @param {Configuration} configuration - The configuration instance to be used
+   * @param configuration - The configuration instance to be used
    * @throws {Error} If OPENAI_API_KEY environment variable is not set
    */
-  constructor(private configuration: Configuration) {
+  constructor(configuration: Configuration) {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is not set');
     }
+    this.configuration = configuration;
     this.chatModel = new ChatOpenAI({ apiKey: process.env.OPENAI_API_KEY });
     this.chatModelFAQ = new ChatOpenAI({
       apiKey: process.env.OPENAI_API_KEY,
@@ -34,61 +34,20 @@ export class AIService {
   }
 
   /**
-   * Generates a comment based on the specified prompt by invoking the chat model.
-   * @param {string} prompt - The prompt for which to generate a comment
-   * @returns {Promise<string>} The generated comment
+   * Generates a comment by invoking the chat model with the specified prompt.
+   * @param prompt - The prompt for which to generate a comment
+   * @param isFAQ - Whether to use the FAQ model
+   * @returns The generated comment
    */
   public async generateComment(prompt: string, isFAQ = false): Promise<string> {
     try {
-      // First try with generous limit
-      let finalPrompt = prompt;
-      if (!isFAQ) {
-        finalPrompt = this.codeFormatter.truncateCodeBlock(prompt, 8000);
-      }
-
+      const finalPrompt = isFAQ
+        ? prompt
+        : this.codeFormatter.truncateCodeBlock(prompt, 8000);
       console.log(
         `Generating comment for prompt of length: ${finalPrompt.length}`,
       );
-
-      try {
-        let response;
-        if (isFAQ) {
-          response = await this.chatModelFAQ.invoke(finalPrompt);
-        } else {
-          response = await this.chatModel.invoke(finalPrompt);
-        }
-        return response.content as string;
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message.includes('maximum context length')
-        ) {
-          console.warn(
-            'Token limit exceeded, attempting with further truncation...',
-          );
-          // Try with more aggressive truncation
-          finalPrompt = this.codeFormatter.truncateCodeBlock(prompt, 4000);
-          try {
-            const response = await this.chatModel.invoke(finalPrompt);
-            return response.content as string;
-          } catch (retryError) {
-            if (
-              retryError instanceof Error &&
-              retryError.message.includes('maximum context length')
-            ) {
-              console.warn(
-                'Still exceeding token limit, using minimal context...',
-              );
-              // Final attempt with minimal context
-              finalPrompt = this.codeFormatter.truncateCodeBlock(prompt, 2000);
-              const response = await this.chatModel.invoke(finalPrompt);
-              return response.content as string;
-            }
-            throw retryError;
-          }
-        }
-        throw error;
-      }
+      return await this.tryGenerateComment(finalPrompt, prompt, isFAQ);
     } catch (error) {
       this.handleAPIError(error as Error);
       return '';
@@ -96,11 +55,69 @@ export class AIService {
   }
 
   /**
-   * Handle API errors by logging the error message and throwing the error.
-   *
-   *
-   * @param {Error} error The error object to handle
-   * @returns {void}
+   * Attempts to generate a comment with retry logic for token limits.
+   * @param prompt - The initial prompt
+   * @param originalPrompt - The original prompt for retries
+   * @param isFAQ - Whether to use the FAQ model
+   * @returns The generated comment
+   */
+  private async tryGenerateComment(
+    prompt: string,
+    originalPrompt: string,
+    isFAQ: boolean,
+  ): Promise<string> {
+    const model = isFAQ ? this.chatModelFAQ : this.chatModel;
+    try {
+      const response = await model.invoke(prompt);
+      return response.content as string;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('maximum context length')
+      ) {
+        return await this.retryWithTruncation(error, originalPrompt, model);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Retries comment generation with progressively truncated prompts.
+   * @param error - The initial error
+   * @param prompt - The original prompt
+   * @param model - The chat model to use
+   * @returns The generated comment
+   */
+  private async retryWithTruncation(
+    error: Error,
+    prompt: string,
+    model: ChatOpenAI,
+  ): Promise<string> {
+    const limits = [4000, 2000];
+    for (const limit of limits) {
+      try {
+        console.warn(`Token limit exceeded, retrying with ${limit} chars...`);
+        const truncatedPrompt = this.codeFormatter.truncateCodeBlock(
+          prompt,
+          limit,
+        );
+        const response = await model.invoke(truncatedPrompt);
+        return response.content as string;
+      } catch (retryError) {
+        if (
+          retryError instanceof Error &&
+          !retryError.message.includes('maximum context length')
+        ) {
+          throw retryError;
+        }
+      }
+    }
+    throw error; // Rethrow original error if all retries fail
+  }
+
+  /**
+   * Handles API errors by logging and rethrowing.
+   * @param error - The error object to handle
    */
   public handleAPIError(error: Error): void {
     console.error('API Error:', error.message);

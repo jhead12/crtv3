@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { RateLimiterRedis } from 'rate-limiter-flexible';
-import { createClient } from 'redis';
+import {  createClient } from 'redis';
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL ?? 'redis://localhost:6379'
+});
+redisClient.on('error', err => console.log('Redis Client Error', err));
 
 export const dynamic = 'force-dynamic';
 
 // Initialize Redis client
-const redisClient = createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
-});
 
-redisClient.on('error', (err: Error) => console.error('Redis Client Error', err));
+
+redisClient.on('error', (err: Error) =>
+  console.error('Redis Client Error', err),
+);
 
 // Initialize RateLimiterRedis
 const rateLimiter = new RateLimiterRedis({
@@ -49,7 +54,10 @@ export async function GET(req: NextRequest) {
       { headers },
     );
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Rate limit exceeded')) {
+    if (
+      error instanceof Error &&
+      error.message.includes('Rate limit exceeded')
+    ) {
       const headers = new Headers({
         'Cache-Control': 'no-store',
         'X-RateLimit-Limit': rateLimiter.points.toString(),
@@ -74,7 +82,5 @@ export async function GET(req: NextRequest) {
 
 // Optional: Disconnect Redis client on process exit
 process.on('SIGTERM', () => {
-  redisClient.quit((err: Error | null) => {
-    if (err) console.error('Error closing Redis connection:', err);
-  });
+  redisClient.quit();
 });

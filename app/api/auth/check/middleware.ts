@@ -1,174 +1,125 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAddress } from 'viem';
-import { checkRateLimit } from '@/types/redis';
+import { RateLimiterRedis } from 'rate-limiter-flexible';
+import { createClient } from 'redis';
+import { readFileSync } from 'fs';
+import path from 'path';
 
-// Define protected routes that require authentication
-const protectedRoutes = [
-  '/dashboard',
-  '/profile',
-  '/upload',
-  '/settings',
-  '/api/protected',
-];
+// Ensure dynamic execution for middleware
+export const dynamic = 'force-dynamic';
 
-// Define public routes that don't require authentication
-const publicRoutes = ['/', '/login', '/register', '/api/auth'];
+// Validate environment variables
+const redisConfig = {
+  password: process.env.REDIS_PASSWORD,
+  host: process.env.REDIS_HOST,
+  port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+  certPath: process.env.REDIS_CERT_PATH ?? './certs',
+};
 
-// Middleware function to handle CORS and wallet-based authentication
+if (!redisConfig.password || !redisConfig.host) {
+  throw new Error('REDIS_PASSWORD and REDIS_HOST are required');
+}
+
+// Initialize Redis client with TLS for redis@2.x
+const redisClient = createClient({
+  host: redisConfig.host,
+  port: redisConfig.port,
+  password: redisConfig.password,
+  tls: {
+    key: readFileSync(
+      path.join(redisConfig.certPath, 'redis_user_private.key'),
+    ),
+    cert: readFileSync(path.join(redisConfig.certPath, 'redis_user.crt')),
+    ca: [readFileSync(path.join(redisConfig.certPath, 'redis_ca.pem'))],
+  },
+});
+
+// Initialize RateLimiterRedis
+const rateLimiter = new RateLimiterRedis({
+  storeClient: redisClient,
+  points: parseInt(process.env.RATE_LIMIT_POINTS ?? '100', 10), // Max requests
+  duration: parseInt(process.env.RATE_LIMIT_DURATION ?? '60', 10), // Seconds
+  keyPrefix: 'ratelimit',
+});
+
+// Handle Redis errors
+redisClient.on('error', (err) => {
+  console.error('Redis client error:', err);
+});
+
+// Log connection status
+redisClient |
+  redisClient.on('connect', () => {
+    console.log('Redis client connected');
+  });
+
+// Middleware for rate limiting
 export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  // Extract client IP (consider proxies)
+  const ip =
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    req.ip ??
+    '127.0.0.1';
 
-  // CORS handling for API routes
-  if (pathname.startsWith('/api')) {
-    const origin = req.headers.get('origin');
-    const allowedOrigins =
-      process.env.NODE_ENV === 'production'
-        ? ['https://tv.creativeplatform.xyz']
-        : ['http://localhost:3000'];
-
-    if (origin && !allowedOrigins.includes(origin)) {
-      return new NextResponse(null, {
-        status: 400,
-        statusText: 'Bad Request',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
+  try {
+    // Ensure Redis is connected
+    if (!redisClient.connected) {
+      // redis@2.x connects implicitly, but ping ensures readiness
+      await new Promise((resolve, reject) => {
+        redisClient.ping((err) => (err ? reject(err) : resolve(null)));
       });
     }
 
-    // Create the base response
-    const res = NextResponse.next();
+    // Consume rate limit points
+    const result = await rateLimiter.consume(ip);
 
-    // Add CORS headers
-    res.headers.set('Access-Control-Allow-Credentials', 'true');
-    res.headers.set('Access-Control-Allow-Origin', origin || '*');
-    res.headers.set(
-      'Access-Control-Allow-Methods',
-      'GET,DELETE,PATCH,POST,PUT',
-    );
-    res.headers.set(
-      'Access-Control-Allow-Headers',
-      'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization',
-    );
-
-    // Handle preflight requests
-    if (req.method === 'OPTIONS') {
-      return new NextResponse(null, { headers: res.headers });
-    }
-  }
-
-  // Check if the route requires authentication
-  const isProtectedRoute = protectedRoutes.some((route) =>
-    pathname.startsWith(route),
-  );
-  const isPublicRoute = publicRoutes.some((route) =>
-    pathname.startsWith(route),
-  );
-
-  if (!isProtectedRoute) {
-    return NextResponse.next();
-  }
-
-  // Get the token from the cookie
-  const token = req.cookies.get('jwt')?.value;
-
-  // If no token and trying to access protected route, redirect to login
-  if (!token && isProtectedRoute) {
-    const url = new URL('/login', req.url);
-    url.searchParams.set('from', pathname);
-    return NextResponse.redirect(url);
-  }
-
-  // For API routes that require authentication
-  if (pathname.startsWith('/api/protected')) {
-    if (!token) {
-      return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-    }
-
-    // Validate wallet address if present
-    const walletAddress = req.headers.get('x-wallet-address');
-    if (walletAddress) {
-      try {
-        const formattedAddress = getAddress(walletAddress);
-        const res = NextResponse.next();
-        res.headers.set('x-validated-address', formattedAddress);
-        return res;
-      } catch {
-        return new NextResponse(
-          JSON.stringify({ error: 'Invalid wallet address' }),
-          {
-            status: 401,
-            headers: {
-              'Content-Type': 'application/json',
-            },
-          },
-        );
-      }
-    }
-  }
-
-  // Add security headers
-  const response = NextResponse.next();
-  const headers = response.headers;
-  headers.set('X-DNS-Prefetch-Control', 'on');
-  headers.set(
-    'Strict-Transport-Security',
-    'max-age=31536000; includeSubDomains',
-  );
-  headers.set('X-Frame-Options', 'SAMEORIGIN');
-  headers.set('X-Content-Type-Options', 'nosniff');
-  headers.set('Referrer-Policy', 'origin-when-cross-origin');
-  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-
-  // Only apply rate limiting to auth endpoints
-  if (pathname.startsWith('/api/auth')) {
-    const ip = req.ip ?? '127.0.0.1';
-    const { success, limit, remaining, reset } = await checkRateLimit(ip);
-
-    // Create a new response with the original response's data
-    const newResponse = NextResponse.next();
-
-    // Copy all existing headers
-    response.headers.forEach((value, key) => {
-      newResponse.headers.set(key, value);
+    // Set rate limit headers
+    const headers = new Headers({
+      'Cache-Control': 'no-store',
+      'X-RateLimit-Limit': rateLimiter.points.toString(),
+      'X-RateLimit-Remaining': result.remainingPoints.toString(),
+      'X-RateLimit-Reset': Math.ceil(result.msBeforeNext / 1000).toString(),
     });
 
-    // Add rate limit headers
-    newResponse.headers.set('X-RateLimit-Limit', limit.toString());
-    newResponse.headers.set('X-RateLimit-Remaining', remaining.toString());
-    newResponse.headers.set('X-RateLimit-Reset', reset.toString());
+    return NextResponse.next({ headers });
+  } catch (error) {
+    // Handle rate limit exceeded
+    if (error instanceof Error && error.name === 'RateLimiterRes') {
+      const rateLimitData = await rateLimiter.get(ip);
+      const headers = new Headers({
+        'Cache-Control': 'no-store',
+        'X-RateLimit-Limit': rateLimiter.points.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': Math.ceil(
+          (rateLimitData?.msBeforeNext ?? rateLimiter.duration * 1000) / 1000,
+        ).toString(),
+      });
 
-    if (!success) {
       return NextResponse.json(
         { error: 'Too many requests' },
-        {
-          status: 429,
-          headers: newResponse.headers,
-        },
+        { status: 429, headers },
       );
     }
 
-    return newResponse;
+    // Log unexpected errors and allow request as fallback
+    console.error('Rate limit check failed:', error);
+    return NextResponse.next();
   }
-
-  return response;
 }
 
-// Middleware configuration to specify paths where the middleware should apply
-export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public (public files)
-     */
-    '/((?!_next/static|_next/image|favicon.ico|public).*)',
-  ],
+// Graceful shutdown
+const shutdown = async () => {
+  try {
+    if (redisClient.connected) {
+      await new Promise((resolve, reject) => {
+        redisClient.quit((err) => (err ? reject(err) : resolve(null)));
+      });
+      console.log('Redis client disconnected');
+    }
+  } catch (err) {
+    console.error('Redis shutdown failed:', err);
+  }
+  process.exit(0);
 };
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

@@ -33,7 +33,7 @@
   "include": [
     "next-env.d.ts",
     "**/*.ts",
-    "**/*.tsx",
+    "app/*.tsx",
     ".next/types/**/*.ts",
     "app/api/asset",
     "app/types/snapshot.d.ts",

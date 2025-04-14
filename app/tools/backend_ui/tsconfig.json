@@ -3,12 +3,7 @@
   "include": ["src", "./lib/ceramic-app/ceramic-app-app"],
   "references": [
     { "path": "./tsconfig.node.json" },
-    { "path": "./lib/ceramic-app/ceramic-app-app" },
-    { "path": "./lib/ceramic-app/ceramic-app-lib" },
-    { "path": "./lib/ceramic-app/ceramic-app-lib-react" },
-    { "path": "./lib/ceramic-app/ceramic-app-lib-react-legacy" },
-    { "path": "./lib/ceramic-app/ceramic-app-lib-react-legacy-vite" },
-    { "path": "./tsconfig.base.json" }
+  
   ],
   "display": "Backend UI",
   "typeAcquisition": {
