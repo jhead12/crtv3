@@ -1,5 +1,0 @@
-
-> @ build:ui /Users/jeldonmusic/Documents/matrixblend_com/Creativ/crtv3
-> tsc && vite build
-
- ELIFECYCLE  Command failed.

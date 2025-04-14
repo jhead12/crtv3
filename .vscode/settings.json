@@ -1,4 +1,10 @@
 {
   "typescript.tsdk": "node_modules/typescript/lib",
-  "cSpell.words": ["TSES"]
+  "cSpell.words": [
+    "farcaster",
+    "solana",
+    "sqljs",
+    "supabase",
+    "TSES"
+  ]
 }

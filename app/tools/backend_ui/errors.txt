@@ -1,0 +1,8 @@
+
+> backend_ui@0.1.0 build /Users/jeldonmusic/Documents/matrixblend_com/Creativ/crtv3/app/tools/backend_ui
+> tsc && vite build
+
+src/pages/DataTransfers.tsx(25,13): error TS2322: Type 'void' is not assignable to type 'Transfer[]'.
+src/pages/KubernetesCreate.tsx(17,13): error TS2322: Type 'void' is not assignable to type 'string'.
+src/pages/KubernetesDashboard.tsx(21,13): error TS2322: Type 'void' is not assignable to type 'Pod[]'.
+ ELIFECYCLE  Command failed with exit code 2.
